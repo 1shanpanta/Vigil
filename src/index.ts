@@ -18,7 +18,7 @@ const filePath = values.file;
 const tracker = new ErrorTracker();
 const server = createServer(tracker, port);
 
-console.log(`\n  logwatch is running\n`);
+console.log(`\n  vigil is running\n`);
 console.log(`  Dashboard: http://localhost:${port}`);
 
 if (filePath) {
