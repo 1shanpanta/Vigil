@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>logwatch</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: '#0a0a0f',
+            card: '#111118',
+            border: '#1e1e2a',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+    .pulse-dot { animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  </style>
+</head>
+<body class="bg-surface text-slate-200 min-h-screen">
+
+  <!-- Header -->
+  <header class="border-b border-border px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+        <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+      </div>
+      <h1 class="text-lg font-semibold text-white">logwatch</h1>
+      <span class="text-xs text-slate-500 mono">real-time error monitor</span>
+    </div>
+    <div id="connection-status" class="flex items-center gap-2 text-xs">
+      <div id="status-dot" class="w-2 h-2 rounded-full bg-slate-600"></div>
+      <span id="status-text" class="text-slate-500">connecting...</span>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
+
+    <!-- Summary Cards -->
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div class="bg-card border border-border rounded-xl p-4">
+        <div class="text-xs text-slate-500 mb-1">Total Requests</div>
+        <div id="stat-total" class="text-2xl font-semibold text-white mono">0</div>
+      </div>
+      <div class="bg-card border border-border rounded-xl p-4">
+        <div class="text-xs text-slate-500 mb-1">Errors</div>
+        <div id="stat-errors" class="text-2xl font-semibold text-red-400 mono">0</div>
+      </div>
+      <div class="bg-card border border-border rounded-xl p-4">
+        <div class="text-xs text-slate-500 mb-1">Error Rate</div>
+        <div id="stat-rate" class="text-2xl font-semibold text-amber-400 mono">0%</div>
+      </div>
+      <div class="bg-card border border-border rounded-xl p-4">
+        <div class="text-xs text-slate-500 mb-1">Uptime</div>
+        <div id="stat-uptime" class="text-2xl font-semibold text-emerald-400 mono">0m</div>
+      </div>
+      <div class="bg-card border border-border rounded-xl p-4 col-span-2 lg:col-span-1">
+        <div class="text-xs text-slate-500 mb-1">4xx / 5xx Split</div>
+        <div class="flex items-baseline gap-2">
+          <span id="stat-4xx" class="text-2xl font-semibold text-amber-400 mono">0</span>
+          <span class="text-slate-600">/</span>
+          <span id="stat-5xx" class="text-2xl font-semibold text-red-400 mono">0</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- Error Rate Chart -->
+      <div class="lg:col-span-2 bg-card border border-border rounded-xl p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-medium text-slate-400">Error Rate (per minute)</h2>
+          <div class="flex items-center gap-4 text-xs">
+            <div class="flex items-center gap-1.5">
+              <div class="w-3 h-0.5 bg-amber-400 rounded"></div>
+              <span class="text-slate-500">4xx</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <div class="w-3 h-0.5 bg-red-400 rounded"></div>
+              <span class="text-slate-500">5xx</span>
+            </div>
+          </div>
+        </div>
+        <div class="h-52">
+          <canvas id="rate-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Status Distribution -->
+      <div class="bg-card border border-border rounded-xl p-5">
+        <h2 class="text-sm font-medium text-slate-400 mb-4">Status Distribution</h2>
+        <div class="h-52 flex items-center justify-center">
+          <canvas id="dist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <!-- Top Error Endpoints -->
+      <div class="bg-card border border-border rounded-xl p-5">
+        <h2 class="text-sm font-medium text-slate-400 mb-4">Top Error Endpoints</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-xs text-slate-600 border-b border-border">
+                <th class="pb-2 text-left font-medium">Method</th>
+                <th class="pb-2 text-left font-medium">Path</th>
+                <th class="pb-2 text-right font-medium">Count</th>
+                <th class="pb-2 text-right font-medium">Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="endpoints-table" class="mono text-xs">
+              <tr><td colspan="4" class="py-8 text-center text-slate-600">No errors yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Live Error Feed -->
+      <div class="bg-card border border-border rounded-xl p-5 flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-medium text-slate-400">Live Error Feed</h2>
+          <span id="feed-count" class="text-xs text-slate-600 mono">0 errors</span>
+        </div>
+        <div id="error-feed" class="flex-1 overflow-y-auto max-h-72 space-y-1.5 scrollbar-thin">
+          <div class="py-8 text-center text-sm text-slate-600">Waiting for errors...</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // --- State ---
+    let rateChart, distChart;
+    let feedCount = 0;
+    const MAX_FEED_ITEMS = 100;
+
+    // --- Formatters ---
+    function formatUptime(seconds) {
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function formatNumber(n) {
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+      if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+      return n.toString();
+    }
+
+    function timeAgo(isoStr) {
+      const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+      if (diff < 60) return `${diff}s ago`;
+      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+      return `${Math.floor(diff / 86400)}d ago`;
+    }
+
+    function statusBadge(status) {
+      const el = document.createElement('span');
+      const is5xx = status >= 500;
+      el.className = `inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium mono ${
+        is5xx ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'
+      }`;
+      el.textContent = status;
+      return el;
+    }
+
+    // --- Charts ---
+    function initCharts() {
+      const rateCtx = document.getElementById('rate-chart').getContext('2d');
+      rateChart = new Chart(rateCtx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: '4xx',
+              data: [],
+              borderColor: '#fbbf24',
+              backgroundColor: 'rgba(251, 191, 36, 0.1)',
+              borderWidth: 1.5,
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0,
+              pointHoverRadius: 3,
+            },
+            {
+              label: '5xx',
+              data: [],
+              borderColor: '#f87171',
+              backgroundColor: 'rgba(248, 113, 113, 0.1)',
+              borderWidth: 1.5,
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0,
+              pointHoverRadius: 3,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { intersect: false, mode: 'index' },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255,255,255,0.03)' },
+              ticks: { color: '#475569', font: { size: 10, family: 'JetBrains Mono' }, maxRotation: 0, maxTicksLimit: 12 },
+              border: { display: false },
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(255,255,255,0.03)' },
+              ticks: { color: '#475569', font: { size: 10, family: 'JetBrains Mono' }, precision: 0 },
+              border: { display: false },
+            },
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#1e293b',
+              titleFont: { family: 'JetBrains Mono', size: 11 },
+              bodyFont: { family: 'JetBrains Mono', size: 11 },
+              borderColor: '#334155',
+              borderWidth: 1,
+              padding: 8,
+            },
+          },
+        },
+      });
+
+      const distCtx = document.getElementById('dist-chart').getContext('2d');
+      distChart = new Chart(distCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['2xx', '3xx', '4xx', '5xx'],
+          datasets: [{
+            data: [0, 0, 0, 0],
+            backgroundColor: ['#34d399', '#60a5fa', '#fbbf24', '#f87171'],
+            borderColor: '#111118',
+            borderWidth: 3,
+            hoverOffset: 4,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          cutout: '65%',
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: {
+                color: '#64748b',
+                font: { size: 11, family: 'JetBrains Mono' },
+                padding: 12,
+                usePointStyle: true,
+                pointStyleWidth: 8,
+              },
+            },
+            tooltip: {
+              backgroundColor: '#1e293b',
+              bodyFont: { family: 'JetBrains Mono', size: 11 },
+              borderColor: '#334155',
+              borderWidth: 1,
+            },
+          },
+        },
+      });
+    }
+
+    // --- Update Functions ---
+    function updateStats(stats) {
+      document.getElementById('stat-total').textContent = formatNumber(stats.totalRequests);
+      document.getElementById('stat-errors').textContent = formatNumber(stats.errorCount);
+      document.getElementById('stat-rate').textContent = stats.errorRate.toFixed(1) + '%';
+      document.getElementById('stat-uptime').textContent = formatUptime(stats.uptimeSeconds);
+    }
+
+    function updateRateChart(buckets) {
+      rateChart.data.labels = buckets.map(b => b.minute);
+      rateChart.data.datasets[0].data = buckets.map(b => b.count4xx);
+      rateChart.data.datasets[1].data = buckets.map(b => b.count5xx);
+      rateChart.update('none');
+    }
+
+    function updateDistribution(dist) {
+      const data = [dist['2xx'] || 0, dist['3xx'] || 0, dist['4xx'] || 0, dist['5xx'] || 0];
+      distChart.data.datasets[0].data = data;
+      distChart.update('none');
+
+      document.getElementById('stat-4xx').textContent = formatNumber(dist['4xx'] || 0);
+      document.getElementById('stat-5xx').textContent = formatNumber(dist['5xx'] || 0);
+    }
+
+    function updateEndpoints(endpoints) {
+      const tbody = document.getElementById('endpoints-table');
+      if (endpoints.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="py-8 text-center text-slate-600">No errors yet</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = endpoints.map(ep => `
+        <tr class="border-b border-border/50 hover:bg-white/[0.02]">
+          <td class="py-2 pr-3">
+            <span class="px-1.5 py-0.5 rounded text-xs bg-slate-800 text-slate-400">${escapeHtml(ep.method)}</span>
+          </td>
+          <td class="py-2 pr-3 text-slate-300 truncate max-w-[200px]">${escapeHtml(ep.path)}</td>
+          <td class="py-2 pr-3 text-right text-red-400 font-medium">${ep.count}</td>
+          <td class="py-2 text-right text-slate-600">${timeAgo(ep.lastSeen)}</td>
+        </tr>
+      `).join('');
+    }
+
+    function prependError(error) {
+      const feed = document.getElementById('error-feed');
+
+      // Clear placeholder
+      if (feedCount === 0) {
+        feed.innerHTML = '';
+      }
+
+      feedCount++;
+      document.getElementById('feed-count').textContent = `${feedCount} error${feedCount !== 1 ? 's' : ''}`;
+
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-3 px-3 py-2 rounded-lg bg-white/[0.02] hover:bg-white/[0.04] transition-colors fade-in';
+
+      const time = document.createElement('span');
+      time.className = 'text-xs text-slate-600 mono shrink-0';
+      time.textContent = new Date(error.timestamp).toLocaleTimeString();
+
+      const badge = statusBadge(error.status);
+
+      const method = document.createElement('span');
+      method.className = 'text-xs text-slate-500 mono shrink-0';
+      method.textContent = error.method;
+
+      const path = document.createElement('span');
+      path.className = 'text-xs text-slate-300 mono truncate';
+      path.textContent = error.path;
+
+      const ip = document.createElement('span');
+      ip.className = 'text-xs text-slate-600 mono shrink-0 ml-auto';
+      ip.textContent = error.ip;
+
+      row.append(time, badge, method, path, ip);
+      feed.prepend(row);
+
+      // Cap DOM entries
+      while (feed.children.length > MAX_FEED_ITEMS) {
+        feed.removeChild(feed.lastChild);
+      }
+    }
+
+    function renderFullState(state) {
+      updateStats(state.stats);
+      updateRateChart(state.rateHistory);
+      updateDistribution(state.distribution);
+      updateEndpoints(state.topEndpoints);
+
+      // Render existing errors into feed
+      const feed = document.getElementById('error-feed');
+      feed.innerHTML = '';
+      feedCount = state.recentErrors.length;
+      document.getElementById('feed-count').textContent = `${feedCount} error${feedCount !== 1 ? 's' : ''}`;
+
+      if (state.recentErrors.length === 0) {
+        feed.innerHTML = '<div class="py-8 text-center text-sm text-slate-600">Waiting for errors...</div>';
+        return;
+      }
+
+      // Show most recent first
+      const reversed = [...state.recentErrors].reverse();
+      for (const error of reversed.slice(0, MAX_FEED_ITEMS)) {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-3 px-3 py-2 rounded-lg bg-white/[0.02]';
+
+        const time = document.createElement('span');
+        time.className = 'text-xs text-slate-600 mono shrink-0';
+        time.textContent = new Date(error.timestamp).toLocaleTimeString();
+
+        const badge = statusBadge(error.status);
+
+        const method = document.createElement('span');
+        method.className = 'text-xs text-slate-500 mono shrink-0';
+        method.textContent = error.method;
+
+        const path = document.createElement('span');
+        path.className = 'text-xs text-slate-300 mono truncate';
+        path.textContent = error.path;
+
+        const ip = document.createElement('span');
+        ip.className = 'text-xs text-slate-600 mono shrink-0 ml-auto';
+        ip.textContent = error.ip;
+
+        row.append(time, badge, method, path, ip);
+        feed.appendChild(row);
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // --- Connection Status ---
+    function setConnected(connected) {
+      const dot = document.getElementById('status-dot');
+      const text = document.getElementById('status-text');
+      if (connected) {
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-400 pulse-dot';
+        text.className = 'text-emerald-400';
+        text.textContent = 'connected';
+      } else {
+        dot.className = 'w-2 h-2 rounded-full bg-red-400';
+        text.className = 'text-red-400';
+        text.textContent = 'disconnected';
+      }
+    }
+
+    // --- WebSocket ---
+    let ws;
+    let reconnectTimer;
+
+    function connect() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+      ws.onopen = () => {
+        setConnected(true);
+        clearTimeout(reconnectTimer);
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        reconnectTimer = setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        switch (msg.type) {
+          case 'init':
+            renderFullState(msg.data);
+            break;
+          case 'error':
+            prependError(msg.data);
+            break;
+          case 'batch':
+            updateStats(msg.data.stats);
+            updateRateChart(msg.data.rate);
+            updateDistribution(msg.data.distribution);
+            updateEndpoints(msg.data.endpoints);
+            break;
+        }
+      };
+    }
+
+    // --- Init ---
+    initCharts();
+    connect();
+  </script>
+</body>
+</html>
